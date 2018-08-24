@@ -9,9 +9,46 @@
 #
 ###############################################################################
 
-setwd("D:/GIT_REPOSITORY/DataScienceCapstone")
+#setwd("D:/GIT_REPOSITORY/DataScienceCapstone")
 
 library(stringr)
+library(corpus)
+
+###
+#
+# corpusToText
+#
+# 
+corpusToText <- function(sentence)
+{
+    t <- as_corpus_text("")
+    text_filter(t)<- text_filter(drop=stopwords_en)
+    stopwords <- text_filter(t)$drop
+    
+    my_corpus <- as_corpus_text(sentence)
+    text_filter(my_corpus)$drop_symbol = TRUE
+    text_filter(my_corpus)$drop_number = TRUE
+    text_filter(my_corpus)$drop_punct = TRUE
+    #text_filter(my_corpus)$drop <- stopwords
+    #text_filter(my_corpus)$drop <- "â"
+    
+    n <- text_stats(my_corpus)$tokens
+    
+    s <- term_stats(my_corpus, ngrams=n)
+    
+    return(s$term)
+    
+}
+
+###
+#
+# console.log
+#
+# 
+console.log <- function(fmt, ...){
+    print(paste(format(Sys.time(), "%H:%M:%S"), sprintf(fmt, ...)))
+}
+
 
 ###
 #
@@ -44,6 +81,8 @@ removeLastWord <- function(sentence)
 
 textPredictor <- function(sentence, nGrams)
 {
+    sentence <- corpusToText(sentence)
+    
     # calculate the maximum number of N-Grams to use depending on the nwords
     # of the sentence
     nWords <- getNumberOfWords(sentence)    
@@ -54,22 +93,27 @@ textPredictor <- function(sentence, nGrams)
         m <- 5
     }
     
-    wProbs <- c(0.1, 0.2, 0.4, 0.8)
+    wProbs <- c(0.001, 0.01, 0.1, 1)
     
      # loop to call the predictionFromNGrams for each length of ngram
-    for (i in 2:m){
+    for (i in m:2){
         
         prediction <- getPredictionFromNGram(sentence, nGrams, i)
         
         # setting probability weights
         prediction$wProb <- prediction$probability * wProbs[i - 1]
         
-        if (i < 3){
+        if (i == m){
             prediction2 <- prediction
         }
         else{
             prediction2 <- rbind(prediction2, prediction)
             
+        }
+        
+        #break the loop if the ngram is found
+        if (sum(prediction$wProb) > 0){
+            break
         }
 
     }
@@ -82,6 +126,10 @@ textPredictor <- function(sentence, nGrams)
     
     # ordering results by the probability
     output <- output[order(-output$wProb),]
+    
+    
+    # adding index
+    output$index <- 1:nrow(output)
     
     return (output[complete.cases(output),])
     
@@ -122,10 +170,10 @@ getNumberOfWords <- function(sentence)
 #   * probability
 #   * nGramLen
 
-getPredictionFromNGram <- function(sentence, nGrams, nGramLen)
+getPredictionFromNGram <- function(sentence, sGrams, nGramLen)
 {
     #subsetting the ngrams with the given nGramLen
-    sGrams <- nGrams[!is.na(nGrams[, nGramLen + 1]),]
+    sGrams <- sGrams[!is.na(sGrams[, nGramLen + 1]),]
     
     # keeping only the rows with the NGramLen selected
     if (nGramLen != 5)
@@ -139,20 +187,20 @@ getPredictionFromNGram <- function(sentence, nGrams, nGramLen)
     cutSentence <- word(sentence, start = nWords - nGramLen + 2, end = nWords )
    
     # find rows that comparison is ok
-    pGrams <- sGrams[str_detect(sGrams$cutTerm, cutSentence), ]
-    pGrams <- pGrams[, c(nGramLen + 1, 7)]
-    pGrams <- pGrams[complete.cases(pGrams), ]
+    sGrams <- sGrams[which(sGrams$cutTerm == cutSentence), ]
+    sGrams <- sGrams[, c(nGramLen + 1, 7)]
+    sGrams <- sGrams[complete.cases(sGrams), ]
     
     # calculation of probabilitty
     totalprob <- 0
-    totalprob <- sum(pGrams$count)
-    pGrams$prob <- pGrams$count/totalprob
+    totalprob <- sum(sGrams$count)
+    sGrams$prob <- sGrams$count/totalprob
     
     # returning the dataframe with the output
     
     if (totalprob > 0)
     {
-        output <- pGrams[, c(1, 3)]
+        output <- sGrams[, c(1, 3)]
         output$nGramLen <- nGramLen
         colnames(output) <- c("prediction", "probability", "nGramLen")    
     }
@@ -172,11 +220,11 @@ getPredictionFromNGram <- function(sentence, nGrams, nGramLen)
 # getNGramsTrain - function to create the ngrams from the text for
 # training
 #
-getNGramsTrain <- function(inputData, mincount)
+getNGramsTrain <- function(inputData, mincount, nGramsFrom, nGramsTo)
 {
-    bkFile <- "trainNGrams.RData"
+    bkFile <- "./Data/trainNGrams.RData"
     
-    output <- getNGrams(inputData, mincount, bkFile, 1)
+    output <- getNGrams(inputData, mincount, bkFile, 1, nGramsFrom, nGramsTo)
     
     return (output)
 }
@@ -187,11 +235,11 @@ getNGramsTrain <- function(inputData, mincount)
 # getNGramsTest - function to create the ngrams from the text
 # for testing
 #
-getNGramsTest <- function(inputData, mincount)
+getNGramsTest <- function(inputData, mincount, nGramsFrom, nGramsTo)
 {
     bkFile <- "testNGrams.RData"
     
-    output <- getNGrams(inputData, mincount, bkFile, 0)
+    output <- getNGrams(inputData, mincount, bkFile, 0, nGramsFrom, nGramsTo)
     
     return(output)
 }   
@@ -201,50 +249,69 @@ getNGramsTest <- function(inputData, mincount)
 # getNGrams - function to create the ngrams from the text
 # for testing or training
 #
-getNGrams <- function(inputData, mincount, bkFile, train_test)
+getNGrams <- function(inputData, mincount, bkFile, train_test, 
+                        nGramsFrom, nGramsTo)
 {
     
     require(corpus)
     
     if (!file.exists(bkFile))
     {
+        # getting stopwords
+        t <- as_corpus_text("")
+        text_filter(t)<- text_filter(drop=stopwords_en)
+        stopwords <- text_filter(t)$drop
+        
         #twitter
+        console.log("Getting ngrams from twitter")
+
         t <- inputData$twitter
         
         my_corpus <- as_corpus_text(t[train_test])
         
+        #text_filter(my_corpus)$drop <- stopwords
         text_filter(my_corpus)$drop_symbol = TRUE
         text_filter(my_corpus)$drop_number = TRUE
         text_filter(my_corpus)$drop_punct = TRUE
+        #text_filter(my_corpus)$drop <- "â"
         
-        nGramsTwitter <- term_stats(my_corpus, ngrams = 2:5, min_count = mincount, types = TRUE)
+        nGramsTwitter <- term_stats(my_corpus, ngrams = nGramsFrom:nGramsTo, 
+                                        min_count = mincount, types = TRUE)
         
         #blogs
+        console.log("Getting ngrams from blogs")
+        
         t <- inputData$blogs
 
         my_corpus <- as_corpus_text(t[train_test])
         
+        #text_filter(my_corpus)$drop <- stopwords
         text_filter(my_corpus)$drop_symbol = TRUE
         text_filter(my_corpus)$drop_number = TRUE
         text_filter(my_corpus)$drop_punct = TRUE
+        #text_filter(my_corpus)$drop <- "â"
         
-        nGramsBlogs <- term_stats(my_corpus, ngrams = 2:5, min_count = mincount, types = TRUE)
+        nGramsBlogs <- term_stats(my_corpus, ngrams = nGramsFrom:nGramsTo, min_count = mincount, types = TRUE)
         
         #news
+        console.log("Getting ngrams from news")
+        
         t <- inputData$news
 
         my_corpus <- as_corpus_text(t[train_test])
         
+        #text_filter(my_corpus)$drop <- stopwords
         text_filter(my_corpus)$drop_symbol = TRUE
         text_filter(my_corpus)$drop_number = TRUE
         text_filter(my_corpus)$drop_punct = TRUE
-        
-        nGramsNews <- term_stats(my_corpus, ngrams = 2:5, min_count = mincount, types = TRUE)
+        #text_filter(my_corpus)$drop <- "â"
+        nGramsNews <- term_stats(my_corpus, ngrams = nGramsFrom:nGramsTo, min_count = mincount, types = TRUE)
         
         nGrams <- rbind(nGramsTwitter, nGramsBlogs, nGramsNews)
         
         
         # removing last word
+        console.log("Removing last word")
         nGrams$cutTerm <- removeLastWord(nGrams$term)
         
         save(nGrams, file = bkFile)
@@ -282,7 +349,7 @@ importTrainingTestCorpora <- function(trainSample)
     blogsList <- list("train" = rFileTrain, "test" = rFileTest)
     
     #news
-    rFileFull <- dataset$blogs
+    rFileFull <- dataset$news
     my_sample <- sample(length(rFileFull), round(length(rFileFull)*trainSample))
     rFileTrain <- rFileFull[my_sample]
     rFileTest <- rFileFull[-my_sample]
@@ -319,17 +386,17 @@ getCleanedCorpus <- function(dataset, p_sample)
     corpusList$news <- as_corpus_text(nw_sampled)
     
     # clean and filter
-    #text_filter(corpusList$twitter)$drop_symbol = TRUE
-    #text_filter(corpusList$twitter)$drop_number = TRUE
-    #text_filter(corpusList$twitter)$drop_punct = TRUE
+    text_filter(corpusList$twitter)$drop_symbol = TRUE
+    text_filter(corpusList$twitter)$drop_number = TRUE
+    text_filter(corpusList$twitter)$drop_punct = TRUE
     
-    #text_filter(corpusList$blogs)$drop_symbol = TRUE
-    #text_filter(corpusList$blogs)$drop_number = TRUE
-    #text_filter(corpusList$blogs)$drop_punct = TRUE
+    text_filter(corpusList$blogs)$drop_symbol = TRUE
+    text_filter(corpusList$blogs)$drop_number = TRUE
+    text_filter(corpusList$blogs)$drop_punct = TRUE
     
-    #text_filter(corpusList$news)$drop_symbol = TRUE
-    #text_filter(corpusList$news)$drop_number = TRUE
-    #text_filter(corpusList$news)$drop_punct = TRUE
+    text_filter(corpusList$news)$drop_symbol = TRUE
+    text_filter(corpusList$news)$drop_number = TRUE
+    text_filter(corpusList$news)$drop_punct = TRUE
     
     return (corpusList)
 }
@@ -340,11 +407,11 @@ getCleanedCorpus <- function(dataset, p_sample)
 #
 importDataSet <- function()
 {
-    bkFile <- "corpora.RData"
+    bkFile <- "./Data/corpora.RData"
     
     file1 <- "./Data/final/en_US/sample1.txt"
     file2 <- "./Data/final/en_US/sample2.txt"
-    file3 <- "./Data/final/en_US/sample2.txt"
+    file3 <- "./Data/final/en_US/sample3.txt"
     
     file1 <- "./Data/final/en_US/en_US.twitter.txt"
     file2 <- "./Data/final/en_US/en_US.blogs.txt"
